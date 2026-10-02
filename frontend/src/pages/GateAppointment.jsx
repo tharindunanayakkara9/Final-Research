@@ -45,6 +45,20 @@ function tomorrowDate() {
   return d.toISOString().slice(0, 10)
 }
 
+function ResultStat({ icon: Icon, label, value }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#123a5c]">
+        <Icon className="h-5 w-5" />
+      </span>
+      <div>
+        <p className="text-xs text-gray-500">{label}</p>
+        <p className="text-lg font-bold text-[#123a5c]">{value}</p>
+      </div>
+    </div>
+  )
+}
+
 export default function GateAppointment() {
   const [form, setForm] = useState({
     truckId: '',
@@ -75,10 +89,14 @@ export default function GateAppointment() {
       setAssignment({
         lane: result.lane,
         laneQueue: result.lane_queue,
-        timeLabel: `${result.start_time} - ${result.end_time}`,
+        waitMinutes: result.predicted_wait_minutes,
+        gateEntry: result.gate_entry_time,
+        finishTime: result.end_time,
         predictedMinutes: result.predicted_minutes,
         containerType: typeInfo.label,
         cargoCategory: result.cargo_category,
+        modelInputs: result.model_inputs,
+        lanes: result.lanes,
       })
       setStatus('assigned')
     } catch {
@@ -87,8 +105,10 @@ export default function GateAppointment() {
     }
   }
 
+  const maxQueue = assignment ? Math.max(1, ...assignment.lanes.map((l) => l.predicted_queue_length)) : 1
+
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-bold text-[#123a5c]">Request a Gate Appointment</h1>
       <p className="mt-1 text-sm text-gray-600">
         Submit your container details and the system will assign the gate lane and
@@ -261,7 +281,7 @@ export default function GateAppointment() {
           <input
             id="carrierReliability"
             type="range"
-            min="0.3"
+            min="0.5"
             max="1"
             step="0.01"
             value={form.carrierReliability}
@@ -300,47 +320,70 @@ export default function GateAppointment() {
             Appointment Confirmed
           </p>
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-3">
-            <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#123a5c]">
-                <MapPin className="h-5 w-5" />
-              </span>
-              <div>
-                <p className="text-xs text-gray-500">Gate Lane</p>
-                <p className="text-lg font-bold text-[#123a5c]">Gate {assignment.lane}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#123a5c]">
-                <Clock className="h-5 w-5" />
-              </span>
-              <div>
-                <p className="text-xs text-gray-500">Arrival Window</p>
-                <p className="text-lg font-bold text-[#123a5c]">{assignment.timeLabel}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#123a5c]">
-                <CalendarDays className="h-5 w-5" />
-              </span>
-              <div>
-                <p className="text-xs text-gray-500">Predicted Clearance</p>
-                <p className="text-lg font-bold text-[#123a5c]">~{assignment.predictedMinutes} min</p>
-              </div>
-            </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-4">
+            <ResultStat icon={MapPin} label="Gate Lane" value={`Gate ${assignment.lane}`} />
+            <ResultStat
+              icon={Clock}
+              label={`Gate entry (after ~${assignment.waitMinutes} min queue)`}
+              value={assignment.gateEntry}
+            />
+            <ResultStat
+              icon={CalendarDays}
+              label="Predicted Clearance"
+              value={`~${assignment.predictedMinutes} min`}
+            />
+            <ResultStat icon={Truck} label="Expected Departure" value={assignment.finishTime} />
           </div>
 
-          <ul className="mt-5 list-disc space-y-1 pl-5 text-sm text-gray-700">
-            <li>
-              Gate {assignment.lane} had the shortest current queue ({assignment.laneQueue} trucks
-              ahead) among all 6 lanes.
-            </li>
-            <li>
-              {assignment.containerType} / {assignment.cargoCategory} cargo — predicted clearance
-              time based on similar past trucks.
-            </li>
-            <li>Pre-clear your documents before arrival to avoid delays at the gate.</li>
-          </ul>
+          <div className="mt-6 grid gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-green-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Congestion model: forecast queue at arrival hour
+              </p>
+              <ul className="mt-3 space-y-2">
+                {assignment.lanes.map((l) => {
+                  const chosen = l.lane === assignment.lane
+                  const width = Math.min(100, (l.predicted_queue_length / maxQueue) * 100)
+                  return (
+                    <li key={l.lane} className="flex items-center gap-2 text-xs">
+                      <span className={`w-12 ${chosen ? 'font-bold text-[#123a5c]' : 'text-gray-600'}`}>
+                        Gate {l.lane}
+                      </span>
+                      <span className="h-2.5 flex-1 rounded bg-gray-100">
+                        <span
+                          className={`block h-2.5 rounded ${chosen ? 'bg-green-600' : 'bg-[#123a5c]/40'}`}
+                          style={{ width: `${width}%` }}
+                        />
+                      </span>
+                      <span className="w-20 text-right text-gray-600">
+                        {l.predicted_queue_length} trucks
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+              <p className="mt-3 text-xs text-gray-500">
+                Gate {assignment.lane} has the shortest forecast queue, so it is assigned.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-green-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Clearance model: inputs it received
+              </p>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                {Object.entries(assignment.modelInputs).map(([key, value]) => (
+                  <div key={key} className="contents">
+                    <dt className="text-gray-500">{key.replaceAll('_', ' ')}</dt>
+                    <dd className="font-medium text-gray-800">{String(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="mt-3 text-xs text-gray-500">
+                Change any input above and resubmit to see the prediction move.
+              </p>
+            </div>
+          </div>
 
           <Link
             to="/document-upload"
