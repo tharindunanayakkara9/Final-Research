@@ -12,6 +12,7 @@ are a few KB.
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
 import joblib
@@ -21,12 +22,11 @@ MODELS_DIR = Path(__file__).resolve().parent / "models"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 LANE_IDS = [1, 2, 3, 4, 5, 6]
 
-# Defaults for clearance-time features the current booking form doesn't
-# collect yet. See the clearance time model's feature list in
-# ml/src/train_clearance_time_model.py.
-DEFAULT_CUSTOMS_RISK_FLAG = "low"  # most common class in the training data (~72%)
-DEFAULT_CARRIER_RELIABILITY = 0.75  # training data mean
-DEFAULT_MISSING_DOCUMENTS = 0
+# The saved congestion forecast starts right after the SARIMAX training cutoff
+# (last training hour is 2025-12-17 23:00; the final 14 days were held out) and
+# covers one week. A requested date/hour is mapped onto it by hour-of-week, which
+# is what the daily + weekly seasonality of the model actually encodes.
+FORECAST_START = datetime(2025, 12, 18, 0, 0)
 
 # Derived from the training data's own avg_wait_time_minutes / queue_length_end_of_hour
 # ratio (~5.5) — there's no separately trained wait-time model, and the two are
@@ -60,6 +60,9 @@ def predict_clearance_minutes(
     carrier_company: str,
     arrival_hour: int,
     queue_length_at_arrival: float,
+    customs_risk_flag: str = "low",
+    carrier_past_reliability_score: float = 0.75,
+    missing_documents_count: int = 0,
 ) -> float:
     if _clearance_pipeline is None:
         raise RuntimeError("Models not loaded yet")
@@ -71,10 +74,10 @@ def predict_clearance_minutes(
                 "container_type": container_type,
                 "cargo_category": cargo_category,
                 "carrier_company": carrier_company,
-                "customs_risk_flag": DEFAULT_CUSTOMS_RISK_FLAG,
+                "customs_risk_flag": customs_risk_flag,
                 "arrival_hour": arrival_hour,
-                "carrier_past_reliability_score": DEFAULT_CARRIER_RELIABILITY,
-                "missing_documents_count": DEFAULT_MISSING_DOCUMENTS,
+                "carrier_past_reliability_score": carrier_past_reliability_score,
+                "missing_documents_count": missing_documents_count,
                 "queue_length_at_arrival": queue_length_at_arrival,
             }
         ]
@@ -88,8 +91,15 @@ def _current_forecast_index() -> int:
     return int(time.time() // FORECAST_WINDOW_SECONDS) % horizon
 
 
-def get_all_lane_forecasts() -> dict[int, float]:
-    idx = _current_forecast_index()
+def _index_for(when: datetime) -> int:
+    horizon = len(_congestion_forecasts[LANE_IDS[0]])
+    hours = int((when - FORECAST_START).total_seconds() // 3600)
+    return hours % horizon
+
+
+def get_all_lane_forecasts(at: datetime | None = None) -> dict[int, float]:
+    """Forecasted queue length per lane; for `at` if given, else the rolling demo window."""
+    idx = _index_for(at) if at is not None else _current_forecast_index()
     return {lane: round(values[idx], 1) for lane, values in _congestion_forecasts.items()}
 
 
