@@ -11,52 +11,21 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { requestAppointment } from '../lib/api'
 
 const CONTAINER_TYPES = [
-  { value: 'standard', label: 'Standard', icon: Package, baseMinutes: 12 },
-  { value: 'reefer', label: 'Reefer', icon: Snowflake, baseMinutes: 25 },
-  { value: 'hazardous', label: 'Hazardous', icon: AlertTriangle, baseMinutes: 43 },
-  { value: 'oversized', label: 'Oversized', icon: Truck, baseMinutes: 19 },
+  { value: 'standard', label: 'Standard', icon: Package },
+  { value: 'reefer', label: 'Reefer', icon: Snowflake },
+  { value: 'hazardous', label: 'Hazardous', icon: AlertTriangle },
+  { value: 'oversized', label: 'Oversized', icon: Truck },
 ]
 
 const CARRIERS = ['Carrier-A', 'Carrier-B', 'Carrier-C', 'Carrier-D', 'Carrier-E', 'Carrier-F']
-
-const LANE_COUNT = 6
 
 function tomorrowDate() {
   const d = new Date()
   d.setDate(d.getDate() + 1)
   return d.toISOString().slice(0, 10)
-}
-
-// Simulated lane/time assignment — the real assignment (MIP optimizer + ML
-// clearance/congestion models) runs server-side; this stands in until that
-// backend is wired up so the flow can be demoed end-to-end.
-function assignGateSlot({ containerType, cargoCategory }) {
-  const laneQueues = Array.from({ length: LANE_COUNT }, () => Math.floor(Math.random() * 8))
-  let bestLane = 1
-  for (let lane = 2; lane <= LANE_COUNT; lane++) {
-    if (laneQueues[lane - 1] < laneQueues[bestLane - 1]) bestLane = lane
-  }
-
-  const typeInfo = CONTAINER_TYPES.find((t) => t.value === containerType) ?? CONTAINER_TYPES[0]
-  const predictedMinutes = Math.round(typeInfo.baseMinutes + (Math.random() * 6 - 3))
-
-  const slotOffsetMinutes = 20 + laneQueues[bestLane - 1] * 12
-  const slotStart = new Date()
-  slotStart.setMinutes(slotStart.getMinutes() + slotOffsetMinutes, 0, 0)
-  const slotEnd = new Date(slotStart.getTime() + predictedMinutes * 60000)
-
-  const fmt = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-
-  return {
-    lane: bestLane,
-    laneQueue: laneQueues[bestLane - 1],
-    timeLabel: `${fmt(slotStart)} - ${fmt(slotEnd)}`,
-    predictedMinutes,
-    cargoCategory,
-    containerType: typeInfo.label,
-  }
 }
 
 export default function GateAppointment() {
@@ -68,19 +37,33 @@ export default function GateAppointment() {
     containerType: 'standard',
     preferredDate: tomorrowDate(),
   })
-  const [status, setStatus] = useState('idle') // idle | assigning | assigned
+  const [status, setStatus] = useState('idle') // idle | assigning | assigned | error
   const [assignment, setAssignment] = useState(null)
+  const [error, setError] = useState(null)
 
   const updateField = (field) => (e) =>
     setForm((prev) => ({ ...prev, [field]: e.target.value }))
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setStatus('assigning')
-    setTimeout(() => {
-      setAssignment(assignGateSlot(form))
+    setError(null)
+    try {
+      const result = await requestAppointment(form)
+      const typeInfo = CONTAINER_TYPES.find((t) => t.value === form.containerType) ?? CONTAINER_TYPES[0]
+      setAssignment({
+        lane: result.lane,
+        laneQueue: result.lane_queue,
+        timeLabel: `${result.start_time} - ${result.end_time}`,
+        predictedMinutes: result.predicted_minutes,
+        containerType: typeInfo.label,
+        cargoCategory: result.cargo_category,
+      })
       setStatus('assigned')
-    }, 900)
+    } catch {
+      setError('Could not reach the gate appointment service. Is the backend running?')
+      setStatus('error')
+    }
   }
 
   return (
@@ -214,6 +197,12 @@ export default function GateAppointment() {
           </button>
         </div>
       </form>
+
+      {status === 'error' && error && (
+        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       {status === 'assigned' && assignment && (
         <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-6">
