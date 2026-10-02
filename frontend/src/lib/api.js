@@ -16,13 +16,18 @@ async function getJson(path) {
   return res.json()
 }
 
-export function requestAppointment({ truckId, containerId, carrier, cargoCategory, containerType }) {
+export function requestAppointment(form) {
   return postJson('/api/assign-appointment', {
-    truck_id: truckId,
-    container_id: containerId,
-    carrier,
-    cargo_category: cargoCategory,
-    container_type: containerType,
+    truck_id: form.truckId,
+    container_id: form.containerId,
+    carrier: form.carrier,
+    cargo_category: form.cargoCategory,
+    container_type: form.containerType,
+    customs_risk_flag: form.customsRiskFlag,
+    carrier_reliability: Number(form.carrierReliability),
+    missing_documents: Number(form.missingDocuments),
+    arrival_date: form.preferredDate,
+    arrival_hour: Number(form.arrivalHour),
   })
 }
 
