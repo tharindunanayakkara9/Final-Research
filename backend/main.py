@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import ml_models
@@ -12,6 +12,7 @@ from schemas import (
     ClearanceResponse,
     CongestionResponse,
     LaneCongestion,
+    ModelInputs,
 )
 
 
@@ -36,24 +37,19 @@ def health():
     return {"status": "ok", "service": "gate-appointment-system-api"}
 
 
-@app.post("/api/predict-clearance", response_model=ClearanceResponse)
-def predict_clearance(request: ClearanceRequest):
+def _arrival_datetime(inputs: ModelInputs) -> datetime:
+    """Planned gate arrival from the user's date + hour, defaulting to now."""
     now = datetime.now()
-    predicted_minutes = ml_models.predict_clearance_minutes(
-        day_of_week=now.strftime("%A"),
-        container_type=request.container_type,
-        cargo_category=request.cargo_category,
-        carrier_company=request.carrier,
-        arrival_hour=now.hour,
-        queue_length_at_arrival=0,
-    )
-    return ClearanceResponse(predicted_minutes=predicted_minutes)
+    try:
+        base = datetime.strptime(inputs.arrival_date, "%Y-%m-%d") if inputs.arrival_date else now
+    except ValueError:
+        raise HTTPException(status_code=422, detail="arrival_date must be YYYY-MM-DD")
+    hour = inputs.arrival_hour if inputs.arrival_hour is not None else now.hour
+    return base.replace(hour=hour, minute=0, second=0, microsecond=0)
 
 
-@app.get("/api/congestion", response_model=CongestionResponse)
-def get_congestion():
-    forecasts = ml_models.get_all_lane_forecasts()
-    lanes = [
+def _lane_list(forecasts: dict[int, float]) -> list[LaneCongestion]:
+    return [
         LaneCongestion(
             lane=lane,
             predicted_queue_length=queue,
@@ -61,38 +57,92 @@ def get_congestion():
         )
         for lane, queue in sorted(forecasts.items())
     ]
-    return CongestionResponse(lanes=lanes, generated_at=datetime.now().isoformat())
+
+
+def _clearance(inputs: ModelInputs, arrival: datetime, queue: float) -> float:
+    return ml_models.predict_clearance_minutes(
+        day_of_week=arrival.strftime("%A"),
+        container_type=inputs.container_type,
+        cargo_category=inputs.cargo_category,
+        carrier_company=inputs.carrier,
+        arrival_hour=arrival.hour,
+        queue_length_at_arrival=queue,
+        customs_risk_flag=inputs.customs_risk_flag,
+        carrier_past_reliability_score=inputs.carrier_reliability,
+        missing_documents_count=inputs.missing_documents,
+    )
+
+
+@app.post("/api/predict-clearance", response_model=ClearanceResponse)
+def predict_clearance(request: ClearanceRequest):
+    """Clearance-time model on its own, fed exactly what the user supplied."""
+    arrival = _arrival_datetime(request)
+    queue = request.queue_length
+    if queue is None:
+        forecasts = ml_models.get_all_lane_forecasts(arrival)
+        queue = min(forecasts.values())
+    return ClearanceResponse(
+        predicted_minutes=_clearance(request, arrival, queue),
+        queue_length_used=queue,
+        arrival_datetime=arrival.isoformat(timespec="minutes"),
+    )
+
+
+@app.get("/api/congestion", response_model=CongestionResponse)
+def get_congestion(at: str | None = None):
+    """Per-lane forecast. `at` (YYYY-MM-DDTHH:MM) selects a time; omitted = rolling demo window."""
+    when = None
+    if at:
+        try:
+            when = datetime.fromisoformat(at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="at must be an ISO datetime")
+    forecasts = ml_models.get_all_lane_forecasts(when)
+    return CongestionResponse(
+        lanes=_lane_list(forecasts),
+        generated_at=datetime.now().isoformat(),
+        forecast_for=when.isoformat(timespec="minutes") if when else None,
+    )
 
 
 @app.post("/api/assign-appointment", response_model=AppointmentResponse)
 def assign_appointment(request: AppointmentRequest):
-    """Joint (lane, time-slot) assignment: picks the lane with the lowest
-    forecasted queue, then predicts clearance duration for that truck using
-    that lane's forecasted congestion as a feature."""
-    forecasts = ml_models.get_all_lane_forecasts()
+    """Joint (lane, time-slot) assignment: congestion model forecasts every lane
+    for the requested arrival hour, the lowest-queue lane is picked, then the
+    clearance model predicts duration for this truck using that lane's queue."""
+    arrival = _arrival_datetime(request)
+    forecasts = ml_models.get_all_lane_forecasts(arrival)
     best_lane = min(forecasts, key=forecasts.get)
     lane_queue = forecasts[best_lane]
 
-    now = datetime.now()
-    predicted_minutes = ml_models.predict_clearance_minutes(
-        day_of_week=now.strftime("%A"),
-        container_type=request.container_type,
-        cargo_category=request.cargo_category,
-        carrier_company=request.carrier,
-        arrival_hour=now.hour,
-        queue_length_at_arrival=lane_queue,
-    )
+    predicted_minutes = _clearance(request, arrival, lane_queue)
+    wait_minutes = ml_models.estimate_wait_minutes(lane_queue)
 
-    slot_offset_minutes = 15 + lane_queue * 10
-    start_time = now + timedelta(minutes=slot_offset_minutes)
-    end_time = start_time + timedelta(minutes=predicted_minutes)
+    gate_entry = arrival + timedelta(minutes=wait_minutes)
+    end_time = gate_entry + timedelta(minutes=predicted_minutes)
 
+    fmt = "%I:%M %p"
     return AppointmentResponse(
         lane=best_lane,
         lane_queue=lane_queue,
-        start_time=start_time.strftime("%I:%M %p"),
-        end_time=end_time.strftime("%I:%M %p"),
+        arrival_datetime=arrival.isoformat(timespec="minutes"),
+        gate_entry_time=gate_entry.strftime(fmt),
+        start_time=gate_entry.strftime(fmt),
+        end_time=end_time.strftime(fmt),
+        predicted_wait_minutes=wait_minutes,
         predicted_minutes=predicted_minutes,
         container_type=request.container_type,
         cargo_category=request.cargo_category,
+        model_inputs={
+            "day_of_week": arrival.strftime("%A"),
+            "arrival_hour": arrival.hour,
+            "container_type": request.container_type,
+            "cargo_category": request.cargo_category,
+            "carrier": request.carrier,
+            "customs_risk_flag": request.customs_risk_flag,
+            "carrier_reliability": request.carrier_reliability,
+            "missing_documents": request.missing_documents,
+            "queue_length_at_arrival": lane_queue,
+        },
+        lanes=_lane_list(forecasts),
     )
