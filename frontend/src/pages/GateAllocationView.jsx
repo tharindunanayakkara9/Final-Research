@@ -10,14 +10,13 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { getCongestion } from '../lib/api'
 
 const DOC_STATUS_STYLES = {
   cleared: { label: 'Docs Cleared', cls: 'bg-green-50 text-green-700' },
   pending: { label: 'Docs Pending', cls: 'bg-amber-50 text-amber-700' },
   flagged: { label: 'Docs Flagged', cls: 'bg-red-50 text-red-700' },
 }
-
-const LANE_NAMES = [1, 2, 3, 4, 5, 6]
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -27,32 +26,35 @@ function pick(arr) {
   return arr[randomInt(0, arr.length - 1)]
 }
 
-// Simulated live gate state — the real dashboard would poll the per-lane
-// congestion forecasting + MIP assignment service; this generates plausible
-// data so the operator view can be built and demoed before that backend exists.
-function generateLaneData() {
+// Upcoming-arrivals lists are simulated — there's no live truck booking feed
+// yet. Queue length and wait time (what drives the status/bar on each card)
+// come from the real per-lane SARIMAX forecasts via /api/congestion.
+function generateMockTrucks(queueLength) {
   const cargoTypes = ['standard', 'reefer', 'hazardous', 'oversized']
   const docStatuses = ['cleared', 'cleared', 'cleared', 'pending', 'flagged']
+  const truckCount = Math.min(Math.round(queueLength), randomInt(2, 5))
 
-  return LANE_NAMES.map((lane) => {
-    const queueLength = randomInt(0, 11)
-    const avgWait = Math.round(queueLength * randomInt(4, 7) + randomInt(0, 5))
-    const truckCount = Math.min(queueLength, randomInt(2, 5))
-
-    const now = new Date()
-    const trucks = Array.from({ length: truckCount }, (_, i) => {
-      const slot = new Date(now.getTime() + (i + 1) * 9 * 60000)
-      return {
-        id: `TRK-${randomInt(10000, 99999)}`,
-        containerId: `${pick(['MAEU', 'OOLU', 'TCLU', 'CMAU'])}${randomInt(1000000, 9999999)}`,
-        cargoType: pick(cargoTypes),
-        docStatus: pick(docStatuses),
-        timeSlot: slot.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      }
-    })
-
-    return { lane, queueLength, avgWait, trucks }
+  const now = new Date()
+  return Array.from({ length: truckCount }, (_, i) => {
+    const slot = new Date(now.getTime() + (i + 1) * 9 * 60000)
+    return {
+      id: `TRK-${randomInt(10000, 99999)}`,
+      containerId: `${pick(['MAEU', 'OOLU', 'TCLU', 'CMAU'])}${randomInt(1000000, 9999999)}`,
+      cargoType: pick(cargoTypes),
+      docStatus: pick(docStatuses),
+      timeSlot: slot.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }
   })
+}
+
+async function fetchLaneData() {
+  const { lanes } = await getCongestion()
+  return lanes.map((l) => ({
+    lane: l.lane,
+    queueLength: l.predicted_queue_length,
+    avgWait: l.predicted_avg_wait_minutes,
+    trucks: generateMockTrucks(l.predicted_queue_length),
+  }))
 }
 
 function laneStatus(queueLength) {
@@ -124,32 +126,35 @@ function LaneCard({ data }) {
 }
 
 export default function GateAllocationView() {
-  const [lanes, setLanes] = useState(() => generateLaneData())
+  const [lanes, setLanes] = useState([])
   const [lastUpdated, setLastUpdated] = useState(new Date())
   const [dismissedAlert, setDismissedAlert] = useState(false)
+  const [error, setError] = useState(null)
 
-  const refresh = () => {
-    setLanes(generateLaneData())
-    setLastUpdated(new Date())
-    setDismissedAlert(false)
+  const refresh = async () => {
+    try {
+      const data = await fetchLaneData()
+      setLanes(data)
+      setLastUpdated(new Date())
+      setDismissedAlert(false)
+      setError(null)
+    } catch {
+      setError('Could not reach the gate allocation service. Is the backend running?')
+    }
   }
 
-  // Simulate the "live" per-lane tracking described in the spec by jittering
-  // queue lengths periodically, without a real backend feed yet.
+  // Poll the real per-lane congestion forecast — the backend advances its
+  // forecast window every 20s, so matching that here keeps the dashboard
+  // showing genuinely new model output rather than re-fetching unchanged data.
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLanes((prev) =>
-        prev.map((l) => ({
-          ...l,
-          queueLength: Math.max(0, l.queueLength + randomInt(-1, 1)),
-        })),
-      )
-      setLastUpdated(new Date())
-    }, 8000)
+    refresh()
+    const interval = setInterval(refresh, 20000)
     return () => clearInterval(interval)
   }, [])
 
   const summary = useMemo(() => {
+    if (lanes.length === 0) return { totalTrucks: 0, avgWait: 0, balanced: true, variance: '0.0' }
+
     const totalTrucks = lanes.reduce((sum, l) => sum + l.queueLength, 0)
     const avgWait = Math.round(
       lanes.reduce((sum, l) => sum + l.avgWait, 0) / lanes.length,
@@ -191,6 +196,12 @@ export default function GateAllocationView() {
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       {/* Summary stats */}
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
@@ -271,16 +282,21 @@ export default function GateAllocationView() {
       )}
 
       {/* Lane grid */}
-      <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-        {lanes.map((laneData) => (
-          <LaneCard key={laneData.lane} data={laneData} />
-        ))}
-      </div>
+      {lanes.length === 0 && !error ? (
+        <p className="mt-6 text-sm text-gray-500">Loading lane data...</p>
+      ) : (
+        <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {lanes.map((laneData) => (
+            <LaneCard key={laneData.lane} data={laneData} />
+          ))}
+        </div>
+      )}
 
       <div className="mt-6 flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">
         <Users className="h-4 w-4" />
-        Data shown is simulated for prototyping. Connect this view to the live per-lane
-        congestion feed and MIP assignment engine to replace it with real state.
+        Queue length and wait time come from the trained per-lane SARIMAX forecasting
+        models. Upcoming-arrival truck lists are still simulated — there's no live
+        booking feed yet.
       </div>
     </div>
   )
