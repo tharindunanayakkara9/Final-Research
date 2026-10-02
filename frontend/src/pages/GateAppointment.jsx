@@ -20,7 +20,24 @@ const CONTAINER_TYPES = [
   { value: 'oversized', label: 'Oversized', icon: Truck },
 ]
 
-const CARRIERS = ['Carrier-A', 'Carrier-B', 'Carrier-C', 'Carrier-D', 'Carrier-E', 'Carrier-F']
+const CARRIERS = [
+  'Carrier-A', 'Carrier-B', 'Carrier-C', 'Carrier-D', 'Carrier-E',
+  'Carrier-F', 'Carrier-G', 'Carrier-H', 'Carrier-I', 'Carrier-J',
+]
+
+const CUSTOMS_RISK = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+]
+
+const HOURS = Array.from({ length: 24 }, (_, h) => ({
+  value: h,
+  label: `${String(h).padStart(2, '0')}:00`,
+}))
+
+const INPUT_CLASS =
+  'mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#123a5c] focus:ring-1 focus:ring-[#123a5c]'
 
 function tomorrowDate() {
   const d = new Date()
@@ -36,6 +53,10 @@ export default function GateAppointment() {
     cargoCategory: 'export',
     containerType: 'standard',
     preferredDate: tomorrowDate(),
+    arrivalHour: 9,
+    customsRiskFlag: 'low',
+    carrierReliability: 0.75,
+    missingDocuments: 0,
   })
   const [status, setStatus] = useState('idle') // idle | assigning | assigned | error
   const [assignment, setAssignment] = useState(null)
@@ -166,17 +187,86 @@ export default function GateAppointment() {
           </div>
         </div>
 
-        <div className="sm:col-span-2">
+        <div className="sm:col-span-1">
           <label htmlFor="preferredDate" className="block text-sm font-medium text-gray-700">
-            Preferred Date
+            Planned Arrival Date
           </label>
           <input
             id="preferredDate"
             type="date"
             value={form.preferredDate}
             onChange={updateField('preferredDate')}
-            min={tomorrowDate()}
-            className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#123a5c] focus:ring-1 focus:ring-[#123a5c] sm:w-56"
+            className={INPUT_CLASS}
+          />
+        </div>
+
+        <div className="sm:col-span-1">
+          <label htmlFor="arrivalHour" className="block text-sm font-medium text-gray-700">
+            Planned Arrival Hour
+          </label>
+          <select
+            id="arrivalHour"
+            value={form.arrivalHour}
+            onChange={updateField('arrivalHour')}
+            className={INPUT_CLASS}
+          >
+            {HOURS.map((h) => (
+              <option key={h.value} value={h.value}>
+                {h.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="sm:col-span-1">
+          <label htmlFor="customsRiskFlag" className="block text-sm font-medium text-gray-700">
+            Customs Risk Level
+          </label>
+          <select
+            id="customsRiskFlag"
+            value={form.customsRiskFlag}
+            onChange={updateField('customsRiskFlag')}
+            className={INPUT_CLASS}
+          >
+            {CUSTOMS_RISK.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="sm:col-span-1">
+          <label htmlFor="missingDocuments" className="block text-sm font-medium text-gray-700">
+            Missing Documents
+          </label>
+          <input
+            id="missingDocuments"
+            type="number"
+            min="0"
+            max="5"
+            value={form.missingDocuments}
+            onChange={updateField('missingDocuments')}
+            className={INPUT_CLASS}
+          />
+        </div>
+
+        <div className="sm:col-span-2">
+          <label htmlFor="carrierReliability" className="block text-sm font-medium text-gray-700">
+            Carrier Past Reliability:{' '}
+            <span className="font-semibold text-[#123a5c]">
+              {Number(form.carrierReliability).toFixed(2)}
+            </span>
+          </label>
+          <input
+            id="carrierReliability"
+            type="range"
+            min="0.3"
+            max="1"
+            step="0.01"
+            value={form.carrierReliability}
+            onChange={updateField('carrierReliability')}
+            className="mt-2 w-full accent-[#123a5c]"
           />
         </div>
 
