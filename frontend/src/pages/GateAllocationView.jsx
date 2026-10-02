@@ -155,7 +155,7 @@ export default function GateAllocationView() {
   const summary = useMemo(() => {
     if (lanes.length === 0) return { totalTrucks: 0, avgWait: 0, balanced: true, variance: '0.0' }
 
-    const totalTrucks = lanes.reduce((sum, l) => sum + l.queueLength, 0)
+    const totalTrucks = Math.round(lanes.reduce((sum, l) => sum + l.queueLength, 0) * 10) / 10
     const avgWait = Math.round(
       lanes.reduce((sum, l) => sum + l.avgWait, 0) / lanes.length,
     )
